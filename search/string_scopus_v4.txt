@@ -1,0 +1,26 @@
+TITLE-ABS-KEY (
+    ( "video analysis" OR "video measurement" OR "motion tracking"
+      OR "digital video analysis" OR "video-based lab*" OR "video-based experiment*"
+      OR "video modeling" OR "video modelling" OR "high-speed video"
+      OR "Tracker software" OR "Tracker video analysis" OR "TVA"
+      OR "Vernier Video Analysis" OR "LivePhoto Physics"
+      OR ( "Logger Pro" AND video ) OR ( "Phyphox" AND video )
+      OR ( "Pasco Capstone" AND video ) OR ( "Viana" AND video )
+      OR ( "Open Source Physics" AND video )
+      OR "smartphone-based experiment*" OR "webcam physics"
+      OR ( "point tracking" AND physics ) OR ( "object tracking" AND physics )
+    )
+    AND
+    (
+      "physics education" OR "physics teaching" OR "physics learning"
+      OR "physics lab*" OR "physics experiment*" OR "physics instruction"
+      OR "physics demonstration*" OR "physics classroom*" OR "physics curriculum"
+      OR ( physics AND ( pedagog* OR didactic* OR student* OR school OR undergraduate ) )
+      OR "experimental physics"
+    )
+)
+AND NOT TITLE-ABS-KEY (
+    gait OR sport* OR athlete* OR rehabilitation OR patient* OR clinic*
+    OR surg* OR biomechanic* OR "motion capture" OR cinematograph*
+)
+AND PUBYEAR > 1999
