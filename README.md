@@ -1,6 +1,6 @@
 # Video analysis as a pedagogical tool in physics education: a scoping review — data and code
 
-**Tomas Rojas**¹ and **Eduardo Arias Navarro**¹ ²
+**Tomas Rojas**¹ ([ORCID 0000-0001-5745-4255](https://orcid.org/0000-0001-5745-4255)), **Eduardo Arias Navarro**¹ ² ([ORCID 0000-0002-8293-7686](https://orcid.org/0000-0002-8293-7686)) and **Esteban Jiménez Moya**¹ ([ORCID 0000-0001-7712-3197](https://orcid.org/0000-0001-7712-3197))
 ¹ Universidad de Costa Rica, Sede de Occidente, San Ramón, Costa Rica
 ² Universidad Estatal a Distancia, San Pedro de Montes de Oca, Costa Rica
 
@@ -55,4 +55,4 @@ Code: MIT (see `LICENSE`). Data and documentation: [CC BY 4.0](https://creativec
 
 ## Citation
 
-Rojas, T., & Arias Navarro, E. (2026). *Video analysis as a pedagogical tool in physics education: a scoping review — data and code* [Data set and software]. https://github.com/tomas0821/video-analysis-scoping-review-data
+Rojas, T., Arias Navarro, E., & Jiménez Moya, E. (2026). *Video analysis as a pedagogical tool in physics education: a scoping review — data and code* [Data set and software]. https://github.com/tomas0821/video-analysis-scoping-review-data
