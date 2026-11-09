@@ -1,8 +1,7 @@
 # Video analysis as a pedagogical tool in physics education: a scoping review — data and code
 
-**Tomas Rojas**¹ ([ORCID 0000-0001-5745-4255](https://orcid.org/0000-0001-5745-4255)), **Eduardo Arias Navarro**¹ ² ([ORCID 0000-0002-8293-7686](https://orcid.org/0000-0002-8293-7686)) and **Esteban Jiménez Moya**¹ ([ORCID 0000-0001-7712-3197](https://orcid.org/0000-0001-7712-3197))
-¹ Universidad de Costa Rica, Sede de Occidente, San Ramón, Costa Rica
-² Universidad Estatal a Distancia, San Pedro de Montes de Oca, Costa Rica
+**Tomas Rojas** ([ORCID 0000-0001-5745-4255](https://orcid.org/0000-0001-5745-4255)), **Eduardo Arias Navarro** ([ORCID 0000-0002-8293-7686](https://orcid.org/0000-0002-8293-7686)) and **Esteban Jiménez Moya** ([ORCID 0000-0001-7712-3197](https://orcid.org/0000-0001-7712-3197))
+Universidad de Costa Rica, Sede de Occidente, San Ramón, Costa Rica
 
 This repository accompanies the scoping review *Video analysis as a pedagogical tool in physics education: a scoping review* (submitted to *Research in Science & Technological Education*). The review maps the literature on video-based motion analysis (the frame-by-frame tracking of objects in digital video to extract quantitative physical data) in physics teaching, following PRISMA-ScR.
 
