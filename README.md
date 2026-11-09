@@ -22,7 +22,7 @@ The repository holds:
 | `protocol/coding_guide.md` | The coding guide given to every coder: eligibility criteria, decision rules, charting rules and the answer list of every field |
 | `data/records.csv` | The 419 screened records after deduplication and removal of book chapters. Fields: `ID`, `Bib_Key`, first author, year, title, venue, DOI, and the countries named in the affiliation field of the bibliographic record |
 | `coding_form.py` | The coding form (fields, answer lists, guide text), defined once and imported by the scripts below |
-| `merge_coding.py` | Compares the coders' workbooks (agreement, Cohen's kappa), lists the disagreements to resolve, and builds the final workbook |
+| `merge_coding.py` | Compares the three coders' workbooks (Fleiss' kappa, Cohen's kappa per pair), adopts two-of-three majorities, lists the remaining disagreements to resolve, and builds the final workbook |
 | `build_dataset.py` | Final coding workbook → analysis dataset (one row per record) |
 | `review_stats.py` | The category rules shared by every analysis script |
 | `manuscript_numbers.py` | Prints every statistic reported in the article |
@@ -37,9 +37,10 @@ The repository holds:
 The scripts need Python 3.10 or later with `openpyxl`. The figures also need `matplotlib`, `numpy` and `geopandas`; the world map downloads the Natural Earth country boundaries at run time.
 
 ```bash
-# 1. compare the two coders and resolve the disagreements, then build the final workbook
-python merge_coding.py compare --tr coding_TR.xlsx --ean coding_EAN.xlsx --ai coding_AI.xlsx --outdir out
-python merge_coding.py apply   --tr coding_TR.xlsx --ean coding_EAN.xlsx --ai coding_AI.xlsx --outdir out
+# 1. compare the three coders' workbooks (coding_TR.xlsx, coding_EAN.xlsx, coding_EJM.xlsx in one folder),
+#    resolve the disagreements in out/adjudication.xlsx, then build the final workbook
+python merge_coding.py compare --coding-dir workbooks --ai coding_AI.xlsx --outdir out --texdir out
+python merge_coding.py apply   --coding-dir workbooks --ai coding_AI.xlsx --outdir out
 # 2. rebuild every number, table and figure from the final coding
 ./rebuild_results.sh out/coding_FINAL.xlsx results/
 ```

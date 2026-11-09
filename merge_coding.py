@@ -1,26 +1,33 @@
 """
-Compare the two authors' blind codings with each other and with the AI coding,
-then build the final workbook from the agreed and adjudicated values.
+Compare the three authors' blind codings with each other (and with the AI coding), then build the final
+workbook from the agreed, majority and adjudicated values.
 
 Step 1, compare:
     python merge_coding.py compare
-  -> manual_coding/agreement_report.md   agreement and Cohen's kappa (screening), per-field agreement (charting)
-  -> manual_coding/adjudication.xlsx     what needs a decision:
-       'Disagreements': the two authors differ. Fill 'Final' after discussion (the AI value is shown as a third opinion).
-       'AI flags':      the authors agree but the AI differs. 'Final' is prefilled with the authors' value; change it only
-                        if the check shows the authors were wrong.
-Step 2, after filling 'Final':
+  -> manual_coding/agreement_report.md   Fleiss' kappa across the three coders, Cohen's kappa per pair,
+                                         per-field agreement for the charting
+  -> manuscript/agreement_table.tex      the same, as the supplement's agreement table
+  -> manual_coding/adjudication.xlsx     what needs a decision, one row per record and field:
+       'No majority'  all three coders differ: fill 'Final' after discussion (required).
+       'Majority'     two of three agree: 'Final' is prefilled with the majority value; change it only if the
+                      discussion shows the majority was wrong.
+       'Single coder' only one coder charted the record (the others excluded it): 'Final' is prefilled with that
+                      coder's value; used only if the record ends up included.
+       'AI flags'     the three coders agree but the AI coding differs: 'Final' is prefilled with the coders'
+                      value; change it only if the check shows the coders were wrong.
+Step 2, after reviewing the sheets and filling every 'No majority' row:
     python merge_coding.py apply
-  -> manual_coding/coding_FINAL.xlsx     agreed values plus adjudicated values, in the coding layout
-Then: python build_dataset.py --coding manual_coding/coding_FINAL.xlsx --out final_coding/coded_dataset.csv
+  -> manual_coding/coding_FINAL.xlsx     final values in the coding layout
+Then: ./rebuild_results.sh   (or build_dataset.py --coding manual_coding/coding_FINAL.xlsx ...)
 
-Paths can be overridden: --tr, --ean, --ai, --outdir (used for test runs on synthetic data).
+Paths can be overridden: --coders, --coding-dir, --ai, --outdir, --texdir (used for test runs).
 """
 import argparse
 import os
 import re
 import shutil
 from collections import Counter
+from itertools import combinations
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -32,6 +39,8 @@ SCREEN = ["Physics education?", "Video-based motion analysis?", "Decision", "Exc
 CHART = [c[0] for c in M.CHART_COLS if c[0] != "Charting notes"]
 NUMERIC = {"Students (n)", "B: Sample (n)"}
 SETLIKE = {"Author countries", "Software (other / additional)", "B: Instrument names"}
+KAPPA_FIELDS = ("Decision", "Physics education?", "Video-based motion analysis?")
+SHEETS = ("No majority", "Majority", "Single coder", "AI flags")
 
 
 def header(ws):
@@ -62,18 +71,19 @@ def read(path):
 
 def norm(field, v):
     v = (v or "").strip()
-    if field in NUMERIC:
+    if field in NUMERIC or field == "Frame rate":
         m = re.search(r"\d+", v)
         return m.group() if m else v.lower()
     if field in SETLIKE:
         return ";".join(sorted(x.strip().lower() for x in re.split(r"[;,]", v) if x.strip()))
-    if field == "Frame rate":
-        m = re.search(r"\d+", v)
-        return m.group() if m else v.lower()
     return v
 
 
-def kappa(a, b):
+def charted(d):
+    return d.get("Decision") == "Include" and d.get("Screened on") == "Full text"
+
+
+def cohen(a, b):
     pairs = [(x, y) for x, y in zip(a, b) if x and y]
     if not pairs:
         return None, None, 0
@@ -81,122 +91,172 @@ def kappa(a, b):
     po = sum(x == y for x, y in pairs) / n
     ca, cb = Counter(x for x, _ in pairs), Counter(y for _, y in pairs)
     pe = sum(ca[k] * cb[k] for k in set(ca) | set(cb)) / n ** 2
-    return po, (po - pe) / (1 - pe) if pe < 1 else 1.0, n
+    return po, ((po - pe) / (1 - pe) if pe < 1 else 1.0), n
 
 
-def charted(d):
-    return d.get("Decision") == "Include" and d.get("Screened on") == "Full text"
+def fleiss(rows):
+    """One list of labels per subject (same number of raters each) -> (share where all agree, kappa, n)."""
+    rows = [r for r in rows if all(r)]
+    if not rows:
+        return None, None, 0
+    n_r, N = len(rows[0]), len(rows)
+    cats = sorted({c for r in rows for c in r})
+    counts = [Counter(r) for r in rows]
+    p_j = [sum(c[k] for c in counts) / (N * n_r) for k in cats]
+    P_i = [(sum(v * v for v in c.values()) - n_r) / (n_r * (n_r - 1)) for c in counts]
+    P_bar, P_e = sum(P_i) / N, sum(p * p for p in p_j)
+    agree = sum(len(set(r)) == 1 for r in rows) / N
+    return agree, ((P_bar - P_e) / (1 - P_e) if P_e < 1 else 1.0), N
+
+
+def majority(vals):
+    """{coder: normalised value} -> the value at least two coders share, or None."""
+    c = Counter(vals.values())
+    v, k = c.most_common(1)[0] if c else (None, 0)
+    return v if k >= 2 else None
+
+
+def load(a):
+    coders = {c: read(os.path.join(a.coding_dir, f"coding_{c}.xlsx")) for c in a.coders}
+    ai = read(a.ai) if a.ai and os.path.exists(a.ai) else {}
+    ids = sorted(set().union(*[set(d) for d in coders.values()]))
+    return coders, ai, ids
+
+
+def row_of(i, sheet, f, raw, names, ai_val, ai_ev, final):
+    return [i, sheet, f] + [raw.get(c, "") for c in names] + [ai_val, (ai_ev or "")[:500], final, ""]
+
+
+def classify(sheets, i, sheet, f, raw, among, names, ai_val, ai_ev):
+    """Put one record-field into the right adjudication sheet (or none, when all coders agree with each other and the AI)."""
+    v = {c: norm(f, raw.get(c, "")) for c in among}
+    if len(set(v.values())) == 1:
+        if ai_val and norm(f, ai_val) != next(iter(v.values())):
+            sheets["AI flags"].append(row_of(i, sheet, f, raw, names, ai_val, ai_ev, raw[among[0]]))
+        return
+    m = majority(v)
+    if m is not None:
+        sheets["Majority"].append(row_of(i, sheet, f, raw, names, ai_val, ai_ev, next(raw[c] for c in among if v[c] == m)))
+    else:
+        sheets["No majority"].append(row_of(i, sheet, f, raw, names, ai_val, ai_ev, ""))
 
 
 def compare(a):
-    tr, ean, ai = read(a.tr), read(a.ean), read(a.ai)
-    ids = sorted(set(tr) | set(ean))
-    rep = ["# Agreement report", "", f"Records: {len(ids)}. Coders: TR = `{os.path.basename(a.tr)}`, EAN = `{os.path.basename(a.ean)}`, "
-           f"AI = `{os.path.basename(a.ai)}`.", "", "## Screening", "",
-           "| Field | Pair | n | Agreement | Cohen's kappa |", "|---|---|---|---|---|"]
-    for f in ("Decision", "Physics education?", "Video-based motion analysis?"):
-        for name, x, y in (("TR-EAN", tr, ean), ("TR-AI", tr, ai), ("EAN-AI", ean, ai)):
-            po, k, n = kappa([x.get(i, {}).get(f, "") for i in ids], [y.get(i, {}).get(f, "") for i in ids])
-            rep.append(f"| {f} | {name} | {n} | {po:.1%} | {k:.2f} |" if n else f"| {f} | {name} | 0 | - | - |")
-    rep += ["", "## Charting (records both authors charted)", "", "| Field | n | TR-EAN agreement | TR-AI | EAN-AI |", "|---|---|---|---|---|"]
-    both = [i for i in ids if charted(tr.get(i, {})) and charted(ean.get(i, {}))]
+    coders, ai, ids = load(a)
+    names = list(coders)
+    get = lambda c, i, f: coders[c].get(i, {}).get(f, "")
+    pairs = list(combinations(names, 2))
+    rep = ["# Agreement report", "", f"Records: {len(ids)}. Coders: {', '.join(names)}" + ("; the AI coding is used only for flags." if ai else "."), "",
+           "## Screening", "", "| Field | n | All coders agree | Fleiss' kappa | " + " | ".join(f"{x}-{y} kappa" for x, y in pairs) + " |",
+           "|---|---|---|---|" + "---|" * len(pairs)]
+    tex_rows = []
+    for f in KAPPA_FIELDS:
+        ag, k, n = fleiss([[get(c, i, f) for c in names] for i in ids])
+        pk = [cohen([get(x, i, f) for i in ids], [get(y, i, f) for i in ids])[1] for x, y in pairs]
+        if n:
+            rep.append(f"| {f} | {n} | {ag:.1%} | {k:.2f} | " + " | ".join(f"{p:.2f}" if p is not None else "-" for p in pk) + " |")
+            tex_rows.append((f.replace("?", ""), n, ag, k))
+    all_charted = [i for i in ids if all(charted(coders[c].get(i, {})) for c in names)]
+    rep += ["", f"## Charting (records that all coders charted: {len(all_charted)})", "", "| Field | n | All coders agree | Fleiss' kappa |", "|---|---|---|---|"]
+    tex_rows.append(None)
     for f in CHART:
-        def ag(x, y, pool):
-            p = [(norm(f, x[i].get(f)), norm(f, y[i].get(f))) for i in pool if i in x and i in y]
-            p = [q for q in p if q[0] or q[1]]
-            return (sum(u == v for u, v in p) / len(p), len(p)) if p else (None, 0)
-        a1, n1 = ag(tr, ean, both)
-        a2, _ = ag(tr, ai, [i for i in both if charted(ai.get(i, {}))])
-        a3, _ = ag(ean, ai, [i for i in both if charted(ai.get(i, {}))])
-        fmt = lambda v: "-" if v is None else f"{v:.0%}"
-        rep.append(f"| {f} | {n1} | {fmt(a1)} | {fmt(a2)} | {fmt(a3)} |")
-    dis, flags = [], []
+        rows = [[norm(f, get(c, i, f)) or "(blank)" for c in names] for i in all_charted]
+        rows = [r for r in rows if any(x != "(blank)" for x in r)]
+        ag, k, n = fleiss(rows)
+        if n:
+            rep.append(f"| {f} | {n} | {ag:.0%} | {k:.2f} |")
+            tex_rows.append((f.replace("B: ", ""), n, ag, k))
+    sheets = {s: [] for s in SHEETS}
     for i in ids:
-        t, e, x = tr.get(i, {}), ean.get(i, {}), ai.get(i, {})
-        fields = SCREEN + (CHART if (charted(t) or charted(e)) else [])
-        for f in fields:
-            tv, ev, av = t.get(f, ""), e.get(f, ""), x.get(f, "")
-            sheet = "Screening" if f in SCREEN else "Charting"
-            evid = x.get("AI evidence: video analysis" if f == "Video-based motion analysis?" else
-                         "AI evidence: physics education" if f == "Physics education?" else "AI charting evidence", "")
-            if norm(f, tv) != norm(f, ev):
-                dis.append([i, sheet, f, tv, ev, av, evid[:500], "", ""])
-            elif norm(f, av) != norm(f, tv) and (f in SCREEN or charted(x)):
-                flags.append([i, sheet, f, tv, ev, av, evid[:500], tv, ""])
+        cods = {c: coders[c].get(i, {}) for c in names}
+        x = ai.get(i, {})
+        for f in SCREEN:
+            ev = x.get("AI evidence: video analysis" if f == "Video-based motion analysis?" else
+                       "AI evidence: physics education" if f == "Physics education?" else "", "")
+            classify(sheets, i, "Screening", f, {c: cods[c].get(f, "") for c in names}, names, names, x.get(f, ""), ev)
+        among = [c for c in names if charted(cods[c])]
+        for f in CHART if among else []:
+            raw = {c: (cods[c].get(f, "") if c in among else "") for c in names}
+            ai_val = x.get(f, "") if charted(x) else ""
+            if len(among) == 1:
+                if raw[among[0]]:
+                    sheets["Single coder"].append(row_of(i, "Charting", f, raw, names, ai_val, x.get("AI charting evidence", ""), raw[among[0]]))
+                continue
+            classify(sheets, i, "Charting", f, raw, among, names, ai_val, x.get("AI charting evidence", ""))
     os.makedirs(a.outdir, exist_ok=True)
     wb = openpyxl.Workbook()
-    hdr = ["ID", "Sheet", "Field", "TR", "EAN", "AI", "AI evidence", "Final", "Note"]
-    for name, rows, help_ in (("Disagreements", dis, "The authors differ: fill Final after discussion."),
-                              ("AI flags", flags, "The authors agree, the AI differs: Final is prefilled with the authors' value.")):
+    hdr = ["ID", "Sheet", "Field"] + names + ["AI", "AI evidence", "Final", "Note"]
+    helps = {"No majority": "All coders differ: fill Final after discussion (required).",
+             "Majority": "Two of three coders agree: Final is prefilled with the majority value.",
+             "Single coder": "Only one coder charted this record: Final is prefilled with that value; used only if the record is included.",
+             "AI flags": "The coders agree but the AI coding differs: Final is prefilled with the coders' value."}
+    fcol = hdr.index("Final")
+    for name in SHEETS:
         ws = wb.create_sheet(name)
-        ws.append([help_])
+        ws.append([helps[name]])
         ws.append(hdr)
         for c in ws[2]:
             c.font = Font(bold=True)
-        for r in rows:
+        for r in sheets[name]:
             ws.append(r)
-        for col, w in zip("ABCDEFGHI", (7, 10, 26, 22, 22, 22, 60, 22, 30)):
-            ws.column_dimensions[col].width = w
         for row in ws.iter_rows(min_row=3):
             for c in row:
                 c.alignment = Alignment(wrap_text=True, vertical="top")
-            row[7].fill = PatternFill("solid", fgColor="FFF2CC")
+            row[fcol].fill = PatternFill("solid", fgColor="FFF2CC")
         ws.freeze_panes = "A3"
     del wb["Sheet"]
     wb.save(os.path.join(a.outdir, "adjudication.xlsx"))
-    rep += ["", "## To resolve", "", f"- Disagreements between the authors: {len(dis)} "
-            f"(screening {sum(r[1] == 'Screening' for r in dis)}, charting {sum(r[1] == 'Charting' for r in dis)})",
-            f"- AI flags (authors agree, AI differs): {len(flags)}"]
+    rep += ["", "## To resolve", ""] + [f"- {k}: {len(v)} (screening {sum(r[1] == 'Screening' for r in v)}, charting {sum(r[1] == 'Charting' for r in v)})" for k, v in sheets.items()]
     open(os.path.join(a.outdir, "agreement_report.md"), "w").write("\n".join(rep) + "\n")
-    tex = [r"\begin{table}[htbp]", r"\caption{Agreement between the two coders before discussion. Charting fields: records both coders included on full text.}\label{tab:agreement}",
-           r"\centering\small", r"\begin{tabular}{@{}lrrr@{}}", r"\toprule", r"Field & $n$ & Agreement (\%) & Cohen's $\kappa$ \\", r"\midrule"]
-    for f in ("Decision", "Physics education?", "Video-based motion analysis?"):
-        po, k, nn = kappa([tr.get(i, {}).get(f, "") for i in ids], [ean.get(i, {}).get(f, "") for i in ids])
-        if nn:
-            tex.append(f"{f.replace('?', '')} & {nn} & {round(100 * po)} & {k:.2f} \\\\")
-    tex.append(r"\addlinespace")
-    for f in CHART:
-        p_ = [(norm(f, tr[i].get(f)), norm(f, ean[i].get(f))) for i in both]
-        p_ = [q for q in p_ if q[0] or q[1]]
-        if p_:
-            po, k, nn = kappa([u for u, _ in p_], [v for _, v in p_])
-            tex.append(f"{f.replace('B: ', '').replace('&', chr(92) + '&')} & {nn} & {round(100 * po)} & {k:.2f} \\\\")
+    tex = [r"\begin{table}[htbp]",
+           rf"\caption{{Agreement among the {len(names)} coders before discussion: share of records on which all coders agreed, and Fleiss' $\kappa$. Charting fields: records that all coders included on full text.}}\label{{tab:agreement}}",
+           r"\centering\small", r"\begin{tabular}{@{}lrrr@{}}", r"\toprule", r"Field & $n$ & All agree (\%) & Fleiss' $\kappa$ \\", r"\midrule"]
+    for t in tex_rows:
+        tex.append(r"\addlinespace" if t is None else f"{t[0].replace('&', chr(92) + '&')} & {t[1]} & {round(100 * t[2])} & {t[3]:.2f} \\\\")
     tex += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    os.makedirs(a.texdir, exist_ok=True)
     open(os.path.join(a.texdir, "agreement_table.tex"), "w").write("\n".join(tex) + "\n")
-    print("\n".join(rep[-3:]))
-    print(f"-> {a.outdir}/agreement_report.md, {a.outdir}/adjudication.xlsx")
+    print("\n".join(rep[-5:]))
+    print(f"-> {a.outdir}/agreement_report.md, {a.outdir}/adjudication.xlsx, {a.texdir}/agreement_table.tex")
 
 
 def apply(a):
-    tr, ean = read(a.tr), read(a.ean)
+    coders, _, ids = load(a)
+    names = list(coders)
     adj = openpyxl.load_workbook(os.path.join(a.outdir, "adjudication.xlsx"), read_only=True, data_only=True)
     final, missing = {}, []
-    for name in ("Disagreements", "AI flags"):
-        for row in adj[name].iter_rows(min_row=3, values_only=True):
+    for name in SHEETS:
+        rows = list(adj[name].iter_rows(min_row=2, values_only=True))
+        fi = list(rows[0]).index("Final")
+        for row in rows[1:]:
             if not row or not row[0]:
                 continue
-            rid, sheet, f, fv = row[0], row[1], row[2], row[7]
-            if fv in (None, "") and name == "Disagreements":
-                missing.append(f"{rid} {f}")
-            final[(rid, f)] = "" if fv is None else str(fv).strip()
+            fv = row[fi]
+            if fv in (None, "") and name == "No majority":
+                missing.append(f"{row[0]} {row[2]}")
+            final[(row[0], row[2])] = "" if fv is None else str(fv).strip()
     if missing:
-        raise SystemExit(f"{len(missing)} disagreements still have no Final value, e.g. {missing[:8]}")
+        raise SystemExit(f"{len(missing)} 'No majority' rows still have no Final value, e.g. {missing[:8]}")
+
+    def value(i, f):
+        if (i, f) in final:
+            return final[(i, f)]
+        pool = names if f in SCREEN else [c for c in names if charted(coders[c].get(i, {}))]
+        return next((coders[c][i][f] for c in pool if coders[c].get(i, {}).get(f)), "")
     out = os.path.join(a.outdir, "coding_FINAL.xlsx")
-    shutil.copy(a.tr, out)              # same layout; values overwritten below
+    shutil.copy(os.path.join(a.coding_dir, f"coding_{names[0]}.xlsx"), out)
     wb = openpyxl.load_workbook(out)
     for sheet, fields in (("Screening", SCREEN), ("Charting", CHART)):
         ws = wb[sheet]
         hr, col = header(ws)
         for r in range(hr + 1, ws.max_row + 1):
             rid = ws.cell(row=r, column=col["ID"] + 1).value
-            if not rid:
-                continue
-            for f in fields:
-                v = final.get((rid, f), tr.get(rid, {}).get(f, ""))
-                ws.cell(row=r, column=col[f] + 1, value=v or None)
+            if rid:
+                for f in fields:
+                    ws.cell(row=r, column=col[f] + 1, value=value(rid, f) or None)
     g = wb["Guide"]
     g.insert_rows(1, 2)
-    g.cell(row=1, column=1, value="FINAL CODING: agreed values of both authors plus adjudicated disagreements (merge_coding.py apply).")
+    g.cell(row=1, column=1, value=f"FINAL CODING: values on which the coders ({', '.join(names)}) agreed, majority values, and adjudicated disagreements (merge_coding.py apply).")
     wb.save(out)
     print(f"-> {out}")
 
@@ -204,8 +264,8 @@ def apply(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["compare", "apply"])
-    ap.add_argument("--tr", default=os.path.join(BASE, "manual_coding", "coding_TR.xlsx"))
-    ap.add_argument("--ean", default=os.path.join(BASE, "manual_coding", "coding_EAN.xlsx"))
+    ap.add_argument("--coders", nargs="+", default=["TR", "EAN", "EJM"])
+    ap.add_argument("--coding-dir", default=os.path.join(BASE, "manual_coding"))
     ap.add_argument("--ai", default=os.path.join(BASE, "ai_coding_sealed", "coding_AI.xlsx"))
     ap.add_argument("--outdir", default=os.path.join(BASE, "manual_coding"))
     ap.add_argument("--texdir", default=os.path.join(BASE, "manuscript"))
